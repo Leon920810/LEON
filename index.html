@@ -2,23 +2,33 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>跑圈占地 · 原型</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>跑圈占地 v2</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+      onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'">
 <style>
-  html,body{margin:0;height:100%;font-family:-apple-system,"PingFang SC",sans-serif}
-  #map{position:absolute;inset:0}
-  #hud{position:absolute;left:12px;right:12px;bottom:18px;z-index:999;
-       background:#fff;border-radius:16px;padding:14px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+    -webkit-text-size-adjust:100%}
+  #map{position:fixed;top:0;left:0;width:100%;height:100%;z-index:1;background:#e9e9e9}
+  #hud{position:fixed;left:12px;right:12px;bottom:18px;z-index:999;background:#fff;
+    border-radius:16px;padding:14px;box-shadow:0 6px 24px rgba(0,0,0,.18)}
   #hud .row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
   #stat{font-size:13px;color:#666;line-height:1.5}
   #stat b{color:#111;font-size:15px}
-  #btn{width:100%;border:0;border-radius:12px;padding:14px;font-size:17px;font-weight:600;
-       color:#fff;background:#ff5a3c}
+  #btn{width:100%;border:0;border-radius:12px;padding:15px;font-size:17px;font-weight:600;
+    color:#fff;background:#ff5a3c;-webkit-appearance:none}
   #btn.stop{background:#333}
-  #toast{position:absolute;top:70px;left:50%;transform:translateX(-50%);z-index:999;
-        background:rgba(0,0,0,.78);color:#fff;padding:9px 16px;border-radius:20px;
-        font-size:14px;opacity:0;transition:.3s;pointer-events:none}
+  #dbg{position:fixed;top:0;left:0;right:0;z-index:1000;padding:5px 10px;font-size:11px;
+    color:#fff;background:rgba(0,0,0,.62);font-family:monospace;
+    padding-top:calc(5px + env(safe-area-inset-top))}
+  #err{position:fixed;top:40px;left:8px;right:8px;z-index:1001;padding:10px;font-size:12px;
+    background:#ffe0dc;color:#b3261e;border-radius:8px;display:none;word-break:break-all}
+  #loc{position:fixed;top:60px;right:12px;z-index:998;width:44px;height:44px;border:0;
+    border-radius:50%;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.25);font-size:20px}
+  #toast{position:fixed;top:52%;left:50%;transform:translate(-50%,-50%);z-index:1002;
+    background:rgba(0,0,0,.8);color:#fff;padding:10px 18px;border-radius:22px;font-size:14px;
+    opacity:0;transition:.3s;pointer-events:none;max-width:80%;text-align:center}
   #toast.show{opacity:1}
   .lord{background:none;border:none}
   .lord-inner{width:48px;height:48px;border-radius:50%;display:flex;align-items:center;
@@ -29,6 +39,9 @@
 </head>
 <body>
 <div id="map"></div>
+<div id="dbg">加载中…</div>
+<div id="err"></div>
+<button id="loc">◎</button>
 <div id="toast"></div>
 <div id="hud">
   <div class="row">
@@ -38,83 +51,136 @@
   <button id="btn">开始跑步</button>
 </div>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"
+        onerror="this.onerror=null;this.src='https://unpkg.com/leaflet@1.9.4/dist/leaflet.js'"></script>
 <script>
-/* ============ 玩法参数：改这里就能调平衡 ============ */
-const CFG = {
-  minLoopLength: 400,     // 至少跑这么远(米)才检查是否闭合
-  closeThreshold: 30,     // 首尾点距离小于这个值 = 闭合(米)
-  minArea: 3000,          // 最小占领面积(平方米)
-  maxAccuracy: 35,        // GPS 精度差于此值(米)丢弃该点
-  minMove: 4,             // 移动小于此距离不记录(米)，过滤抖动
-  simplifyTol: 8          // 抽稀容差(米)
+/* ================= 错误捕获（出问题会显示在顶部） ================= */
+window.onerror = function(m, s, l) {
+  const e = document.getElementById('err');
+  if (e) { e.style.display = 'block'; e.textContent = '出错：' + m + ' (行' + l + ')'; }
 };
 
+/* ================= 等 Leaflet 加载完成再启动 ================= */
+(function waitL(n) {
+  if (window.L) { try { boot(); } catch (ex) {
+      document.getElementById('err').style.display = 'block';
+      document.getElementById('err').textContent = '启动失败：' + ex.message; } return; }
+  if (n <= 0) {
+    document.getElementById('dbg').textContent = '地图库加载失败，请检查网络';
+    document.getElementById('err').style.display = 'block';
+    document.getElementById('err').textContent =
+      'Leaflet 加载失败。可能 jsdelivr / unpkg 都被网络拦截，请换网络后重试。';
+    return;
+  }
+  setTimeout(function () { waitL(n - 1); }, 250);
+})(40);
+
+/* ================= 玩法参数 ================= */
+const CFG = {
+  minLoopLength: 400,
+  closeThreshold: 30,
+  minArea: 3000,
+  maxAccuracy: 35,
+  minMove: 4,
+  simplifyTol: 8
+};
 const USER = {
   name: '跑步的我',
   color: '#ff5a3c',
-  avatar: 'https://api.dicebear.com/7.x/thumbs/svg?seed=runner'  // 换成自己的头像URL
+  avatar: 'https://api.dicebear.com/7.x/thumbs/svg?seed=runner'
 };
 
-/* ============ 地图 ============ */
-const map = L.map('map', { zoomControl: false }).setView([39.9042, 116.4074], 15);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
-  { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
+/* ================= 坐标系 WGS84 -> GCJ02 ================= */
+const AX = 6378245.0, EE = 0.00669342162296594323;
+let usingGCJ = true;
+function outOfChina(lat, lng) {
+  return !(lng > 73.66 && lng < 135.05 && lat > 3.86 && lat < 53.55);
+}
+function tLat(x, y) {
+  let r = -100 + 2*x + 3*y + 0.2*y*y + 0.1*x*y + 0.2*Math.sqrt(Math.abs(x));
+  r += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3;
+  r += (20*Math.sin(y*Math.PI) + 40*Math.sin(y/3*Math.PI)) * 2/3;
+  r += (160*Math.sin(y/12*Math.PI) + 320*Math.sin(y*Math.PI/30)) * 2/3;
+  return r;
+}
+function tLng(x, y) {
+  let r = 300 + x + 2*y + 0.1*x*x + 0.1*x*y + 0.1*Math.sqrt(Math.abs(x));
+  r += (20*Math.sin(6*x*Math.PI) + 20*Math.sin(2*x*Math.PI)) * 2/3;
+  r += (20*Math.sin(x*Math.PI) + 40*Math.sin(x/3*Math.PI)) * 2/3;
+  r += (150*Math.sin(x/12*Math.PI) + 300*Math.sin(x/30*Math.PI)) * 2/3;
+  return r;
+}
+function wgs2gcj(lat, lng) {
+  if (outOfChina(lat, lng)) return [lat, lng];
+  let dLat = tLat(lng - 105, lat - 35), dLng = tLng(lng - 105, lat - 35);
+  const radLat = lat / 180 * Math.PI;
+  let magic = Math.sin(radLat); magic = 1 - EE * magic * magic;
+  const sm = Math.sqrt(magic);
+  dLat = (dLat * 180) / ((AX * (1 - EE)) / (magic * sm) * Math.PI);
+  dLng = (dLng * 180) / (AX / sm * Math.cos(radLat) * Math.PI);
+  return [lat + dLat, lng + dLng];
+}
+function toMap(lat, lng) { return usingGCJ ? wgs2gcj(lat, lng) : [lat, lng]; }
 
-/* ============ 状态 ============ */
-let running = false, watchId = null;
-let pts = [];                 // 当前轨迹点 {lat,lng,t}
-let liveLine = null;
-let territories = [];         // 已占领的圈
-let gpsOk = false;
+/* ================= 底图 ================= */
+const BASES = {
+  amap: {
+    url: 'https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}',
+    opts: { subdomains: ['1', '2', '3', '4'], maxZoom: 19, attribution: '高德地图' }
+  },
+  osm: {
+    url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+    opts: { subdomains: ['a', 'b', 'c'], maxZoom: 19, attribution: '© OpenStreetMap' }
+  }
+};
 
-const $ = id => document.getElementById(id);
+/* ================= 状态 ================= */
+let map, baseLayers = {}, curBase = 'amap';
+let running = false, watchId = null, lastFix = null;
+let pts = [], liveLine = null, territories = [];
+let tPolys = [], tMarks = [];
+const $ = function (id) { return document.getElementById(id); };
 
-/* ============ 工具函数 ============ */
+/* ================= 几何工具 ================= */
 const R = 6378137;
-const rad = d => d * Math.PI / 180;
-
-function hav(a, b) {          // 两点距离(米)
+function rad(d) { return d * Math.PI / 180; }
+function hav(a, b) {
   const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
-  const s = Math.sin(dLat/2)**2 +
-            Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLng/2)**2;
+  const s = Math.pow(Math.sin(dLat/2), 2) +
+            Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.pow(Math.sin(dLng/2), 2);
   return 2 * R * Math.asin(Math.sqrt(s));
 }
-
-function pathLength(arr) {     // 轨迹总长
+function pathLength(arr) {
   let d = 0;
   for (let i = 1; i < arr.length; i++) d += hav(arr[i-1], arr[i]);
   return d;
 }
-
-function toXY(p, lat0) {       // 等距近似投影，用于面积/几何判断
+function toXY(p, lat0) {
   return [rad(p.lng) * R * Math.cos(rad(lat0)), rad(p.lat) * R];
 }
-
-function areaM2(poly) {        // 多边形面积（球面近似）
+function areaM2(poly) {
   if (poly.length < 3) return 0;
-  const lat0 = poly.reduce((s,p) => s + p.lat, 0) / poly.length;
-  const xy = poly.map(p => toXY(p, lat0));
+  let s = 0; for (let i = 0; i < poly.length; i++) s += poly[i].lat;
+  const lat0 = s / poly.length;
+  const xy = poly.map(function (p) { return toXY(p, lat0); });
   let a = 0;
   for (let i = 0; i < xy.length; i++) {
     const j = (i + 1) % xy.length;
-    a += xy[i][0] * xy[j][1] - xy[j][0] * xy[i][1];
+    a += xy[i][0]*xy[j][1] - xy[j][0]*xy[i][1];
   }
   return Math.abs(a) / 2;
 }
-
-function perpDist(p, a, b) {   // 点到线段距离(米)
+function perpDist(p, a, b) {
   const lat0 = (a.lat + b.lat) / 2;
   const P = toXY(p, lat0), A = toXY(a, lat0), B = toXY(b, lat0);
-  const dx = B[0]-A[0], dy = B[1]-A[1], len = Math.hypot(dx, dy);
-  if (len === 0) return Math.hypot(P[0]-A[0], P[1]-A[1]);
+  const dx = B[0]-A[0], dy = B[1]-A[1], len = Math.sqrt(dx*dx + dy*dy);
+  if (len === 0) return Math.sqrt(Math.pow(P[0]-A[0],2) + Math.pow(P[1]-A[1],2));
   return Math.abs(dy*P[0] - dx*P[1] + B[0]*A[1] - B[1]*A[0]) / len;
 }
-
-function simplify(points, tol) {   // Douglas-Peucker 抽稀
+function simplify(points, tol) {
   if (points.length < 3) return points.slice();
   let maxD = -1, idx = 0;
-  const first = points[0], last = points[points.length-1];
+  const first = points[0], last = points[points.length - 1];
   for (let i = 1; i < points.length - 1; i++) {
     const d = perpDist(points[i], first, last);
     if (d > maxD) { maxD = d; idx = i; }
@@ -126,29 +192,28 @@ function simplify(points, tol) {   // Douglas-Peucker 抽稀
   }
   return [first, last];
 }
-
 function cross(o, a, b) {
   return (a.lng-o.lng)*(b.lat-o.lat) - (a.lat-o.lat)*(b.lng-o.lng);
 }
-function segIntersect(p1,p2,p3,p4) {
+function segX(p1, p2, p3, p4) {
   const d1 = cross(p3,p4,p1), d2 = cross(p3,p4,p2);
   const d3 = cross(p1,p2,p3), d4 = cross(p1,p2,p4);
   return ((d1>0&&d2<0)||(d1<0&&d2>0)) && ((d3>0&&d4<0)||(d3<0&&d4>0));
 }
-function isSimple(poly) {      // 自交检测（"8"字形轨迹不算合法圈）
+function isSimple(poly) {
   const n = poly.length;
   for (let i = 0; i < n; i++) {
     for (let j = i + 2; j < n; j++) {
       if (i === 0 && j === n - 1) continue;
-      if (segIntersect(poly[i], poly[(i+1)%n], poly[j], poly[(j+1)%n])) return false;
+      if (segX(poly[i], poly[(i+1)%n], poly[j], poly[(j+1)%n])) return false;
     }
   }
   return true;
 }
-
-function centroid(poly) {      // 面积质心，用来放头像
-  const lat0 = poly.reduce((s,p) => s + p.lat, 0) / poly.length;
-  const xy = poly.map(p => toXY(p, lat0));
+function centroid(poly) {
+  let s = 0; for (let i = 0; i < poly.length; i++) s += poly[i].lat;
+  const lat0 = s / poly.length;
+  const xy = poly.map(function (p) { return toXY(p, lat0); });
   let cx = 0, cy = 0, a = 0;
   for (let i = 0; i < xy.length; i++) {
     const j = (i+1) % xy.length;
@@ -159,152 +224,245 @@ function centroid(poly) {      // 面积质心，用来放头像
   const cosLat = Math.cos(rad(lat0));
   return { lat: (cy / R) * 180 / Math.PI, lng: (cx / (R*cosLat)) * 180 / Math.PI };
 }
-
-/* ============ 核心：判断是否形成了闭合圈 ============ */
 function findLoopStart(points) {
   const last = points[points.length - 1];
   let dist = 0;
   for (let i = points.length - 2; i >= 0; i--) {
     dist += hav(points[i], points[i + 1]);
-    if (dist < CFG.minLoopLength) continue;      // 太短，还不能算圈
-    if (hav(points[i], last) < CFG.closeThreshold) return i;  // 回到起点了！
+    if (dist < CFG.minLoopLength) continue;
+    if (hav(points[i], last) < CFG.closeThreshold) return i;
   }
   return -1;
 }
 
-/* ============ 占领 ============ */
+/* ================= 绘制 ================= */
+function clearTerritoryLayers() {
+  tPolys.forEach(function (l) { map.removeLayer(l); });
+  tMarks.forEach(function (l) { map.removeLayer(l); });
+  tPolys = []; tMarks = [];
+}
+function drawTerritory(poly, area) {
+  const ll = poly.map(function (p) { const c = toMap(p.lat, p.lng); return [c[0], c[1]]; });
+  const pg = L.polygon(ll, {
+    color: USER.color, weight: 2, fillColor: USER.color, fillOpacity: 0.32
+  }).addTo(map);
+  pg.bindPopup('<b>' + USER.name + '</b><br>面积 ' + Math.round(area) + ' ㎡');
+  tPolys.push(pg);
+
+  const c0 = centroid(poly);
+  const c = toMap(c0.lat, c0.lng);
+  const mk = L.marker([c[0], c[1]], {
+    icon: L.divIcon({
+      className: 'lord',
+      html: '<div class="lord-inner" style="background:' + USER.color + '">' +
+            '<img src="' + USER.avatar + '" onerror="this.remove()"></div>',
+      iconSize: [48, 48], iconAnchor: [24, 24]
+    })
+  }).addTo(map);
+  tMarks.push(mk);
+}
+function drawAllTerritories() {
+  clearTerritoryLayers();
+  territories.forEach(function (poly) { drawTerritory(poly, areaM2(poly)); });
+}
+function rebuildLive() {
+  if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
+  if (!pts.length) return;
+  const ll = pts.map(function (p) { const c = toMap(p.lat, p.lng); return [c[0], c[1]]; });
+  liveLine = L.polyline(ll, { color: USER.color, weight: 5, opacity: .85 }).addTo(map);
+}
+
+/* ================= 底图切换 ================= */
+function useBase(name) {
+  curBase = name;
+  usingGCJ = (name === 'amap');
+  for (const k in baseLayers) {
+    if (map.hasLayer(baseLayers[k])) map.removeLayer(baseLayers[k]);
+  }
+  if (!baseLayers[name]) baseLayers[name] = L.tileLayer(BASES[name].url, BASES[name].opts);
+  baseLayers[name].addTo(map);
+  drawAllTerritories();
+  rebuildLive();
+  if (lastFix) {
+    const c = toMap(lastFix.lat, lastFix.lng);
+    map.setView([c[0], c[1]], map.getZoom(), { animate: false });
+  }
+  toast(name === 'amap' ? '底图：高德' : '底图：OSM');
+}
+
+/* ================= 占领判定 ================= */
 function tryClaim() {
   const start = findLoopStart(pts);
   if (start < 0) return false;
-
   const poly = simplify(pts.slice(start), CFG.simplifyTol);
   if (poly.length < 3) return false;
 
   const area = areaM2(poly);
-  if (area < CFG.minArea) { toast(`圆的圈只有 ${Math.round(area)}㎡，再大一点`); return false; }
-  if (!isSimple(poly))    { toast('轨迹有交叉，没法算面积哦'); return false; }
+  if (!isSimple(poly)) { toast('轨迹有交叉，没法闭合哦'); return false; }
+  if (area < CFG.minArea) { toast('圈只有 ' + Math.round(area) + '㎡，再大一点'); return false; }
 
-  drawTerritory(poly, area);
   territories.push(poly);
+  drawTerritory(poly, area);
   save();
-
-  // 从当前点开始新的一段
   pts = [pts[pts.length - 1]];
+  rebuildLive();
   updateStat();
-  toast(`🎉 占领成功！${Math.round(area)} 平方米`);
+  toast('🎉 占领成功！' + Math.round(area) + ' 平方米');
   return true;
 }
 
-function drawTerritory(poly, area) {
-  const latlngs = poly.map(p => [p.lat, p.lng]);
-  L.polygon(latlngs, {
-    color: USER.color, weight: 2, fillColor: USER.color, fillOpacity: 0.32
-  }).addTo(map).bindPopup(`<b>${USER.name}</b><br>面积 ${Math.round(area)} ㎡`);
-
-  const c = centroid(poly);
-  L.marker([c.lat, c.lng], {
-    icon: L.divIcon({
-      className: 'lord',
-      html: `<div class="lord-inner" style="background:${USER.color}">
-               <img src="${USER.avatar}" onerror="this.remove()">
-             </div>`,
-      iconSize: [48, 48], iconAnchor: [24, 24]
-    })
-  }).addTo(map);
-}
-
-/* ============ 轨迹记录 ============ */
+/* ================= 定位 ================= */
 function onPos(pos) {
-  gpsOk = true;
-  const { latitude: lat, longitude: lng, accuracy } = pos.coords;
-  $('gps').textContent = `GPS ±${Math.round(accuracy)}m`;
-  $('gps').style.color = accuracy > 30 ? '#e08b00' : '#3aa76d';
+  const lat = pos.coords.latitude, lng = pos.coords.longitude;
+  const acc = pos.coords.accuracy;
+  lastFix = { lat: lat, lng: lng };
+  $('gps').textContent = 'GPS ±' + Math.round(acc) + 'm';
+  $('gps').style.color = acc > 30 ? '#e08b00' : '#3aa76d';
+  dbg('GPS±' + Math.round(acc));
 
   if (!running) return;
-  if (accuracy > CFG.maxAccuracy) return;        // 精度太差，丢弃
+  if (acc > CFG.maxAccuracy) return;
 
-  const p = { lat, lng, t: Date.now() };
+  const p = { lat: lat, lng: lng, t: Date.now() };
   const last = pts[pts.length - 1];
-  if (last && hav(last, p) < CFG.minMove) return;  // 原地抖动不记录
-
+  if (last && hav(last, p) < CFG.minMove) return;
   pts.push(p);
   if (pts.length > 3000) pts.shift();
 
+  const c = toMap(lat, lng);
   if (!liveLine) {
-    liveLine = L.polyline([[p.lat, p.lng]], { color: USER.color, weight: 5, opacity: .85 }).addTo(map);
+    liveLine = L.polyline([[c[0], c[1]]], { color: USER.color, weight: 5, opacity: .85 }).addTo(map);
   } else {
-    liveLine.addLatLng([p.lat, p.lng]);
+    liveLine.addLatLng([c[0], c[1]]);
   }
-  map.panTo([p.lat, p.lng], { animate: true, duration: .4 });
+  map.panTo([c[0], c[1]], { animate: true, duration: .4 });
 
   if (!tryClaim()) updateStat();
 }
-
 function onErr(e) {
-  gpsOk = false;
-  $('gps').textContent = 'GPS 不可用';
-  toast('定位失败：' + e.message);
+  $('gps').textContent = '定位失败';
+  $('gps').style.color = '#d33';
+  dbg('GPS✗' + (e.code || ''));
+  toast('定位失败：' + e.message + '（请允许定位权限，且必须用 HTTPS 访问）');
 }
-
 function updateStat() {
   $('d').textContent = Math.round(pathLength(pts));
   $('c').textContent = territories.length;
 }
 
-/* ============ 按钮 ============ */
-$('btn').onclick = () => {
-  if (!running) {
-    running = true;
-    pts = []; 
-    if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
-    $('btn').textContent = '结束跑步';
-    $('btn').classList.add('stop');
-    watchId = navigator.geolocation.watchPosition(onPos, onErr, {
-      enableHighAccuracy: true, maximumAge: 0, timeout: 15000
-    });
-    toast('开始记录，跑个圈回来～');
-  } else {
-    running = false;
-    navigator.geolocation.clearWatch(watchId);
-    $('btn').textContent = '开始跑步';
-    $('btn').classList.remove('stop');
-    if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
-  }
-};
+/* ================= 自检条 ================= */
+let dbgExtra = '';
+function dbg(s) { dbgExtra = s; paintDbg(); }
+function paintDbg() {
+  let css = false;
+  try {
+    const d = document.createElement('div');
+    d.className = 'leaflet-pane';
+    document.body.appendChild(d);
+    css = getComputedStyle(d).position === 'absolute';
+    d.remove();
+  } catch (e) {}
+  $('dbg').textContent =
+    '库' + (window.L ? '✓' : '✗') + ' 样式' + (css ? '✓' : '✗') +
+    ' 屏' + window.innerWidth + 'x' + window.innerHeight +
+    ' ' + (dbgExtra || '') + ' 底图:' + (curBase === 'amap' ? '高德' : 'OSM');
+}
 
-/* ============ 本地存储（换成后端后删掉） ============ */
+/* ================= 存储 ================= */
 const KEY = 'run_territories_v1';
 function save() {
-  localStorage.setItem(KEY, JSON.stringify(
-    territories.map(p => p.map(({lat, lng}) => [lat, lng]))
-  ));
+  try {
+    localStorage.setItem(KEY, JSON.stringify(territories.map(function (poly) {
+      return poly.map(function (p) { return [p.lat, p.lng]; });
+    })));
+  } catch (e) {}
 }
 function load() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || '[]');
-    raw.forEach(arr => {
-      const poly = arr.map(([lat, lng]) => ({ lat, lng }));
-      territories.push(poly);
-      drawTerritory(poly, areaM2(poly));
+    raw.forEach(function (arr) {
+      territories.push(arr.map(function (a) { return { lat: a[0], lng: a[1] }; }));
     });
   } catch (e) {}
+  drawAllTerritories();
   updateStat();
 }
 
+/* ================= 提示 ================= */
 let toastTimer;
 function toast(msg) {
   const t = $('toast');
-  t.textContent = msg; t.classList.add('show');
+  t.textContent = msg; t.className = 'show';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(function () { t.className = ''; }, 2600);
 }
 
-/* ============ 启动 ============ */
-navigator.geolocation.getCurrentPosition(
-  p => { map.setView([p.coords.latitude, p.coords.longitude], 16); onPos(p); },
-  onErr, { enableHighAccuracy: true, timeout: 10000 }
-);
-load();
+/* ================= 启动 ================= */
+function boot() {
+  map = L.map('map', { zoomControl: false, preferCanvas: true })
+         .setView([39.9042, 116.4074], 15);
+  useBase('amap');
+
+  // 手机端关键：容器尺寸算错时强制刷新
+  setTimeout(function () { map.invalidateSize(); }, 200);
+  setTimeout(function () { map.invalidateSize(); }, 800);
+  window.addEventListener('resize', function () { map.invalidateSize(); });
+  window.addEventListener('orientationchange', function () {
+    setTimeout(function () { map.invalidateSize(); }, 400);
+  });
+
+  load();
+  paintDbg();
+  setInterval(paintDbg, 2000);
+
+  // 地图右下角加"切换底图"
+  const ctl = L.control({ position: 'bottomleft' });
+  ctl.onAdd = function () {
+    const d = L.DomUtil.create('div', 'leaflet-bar');
+    d.innerHTML = '<a href="#" style="padding:0 8px;font-size:12px;line-height:26px">底图</a>';
+    d.onclick = function (ev) { ev.preventDefault(); useBase(curBase === 'amap' ? 'osm' : 'amap'); };
+    return d;
+  };
+  ctl.addTo(map);
+
+  // 回到我的位置
+  $('loc').onclick = function () {
+    if (lastFix) {
+      const c = toMap(lastFix.lat, lastFix.lng);
+      map.setView([c[0], c[1]], 17);
+    } else {
+      navigator.geolocation.getCurrentPosition(onPos, onErr,
+        { enableHighAccuracy: true, timeout: 10000 });
+    }
+  };
+
+  // 开始 / 结束
+  $('btn').onclick = function () {
+    if (!running) {
+      running = true;
+      pts = [];
+      if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
+      $('btn').textContent = '结束跑步';
+      $('btn').className = 'stop';
+      watchId = navigator.geolocation.watchPosition(onPos, onErr, {
+        enableHighAccuracy: true, maximumAge: 0, timeout: 15000
+      });
+      toast('开始记录，跑个圈回来～');
+    } else {
+      running = false;
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      $('btn').textContent = '开始跑步';
+      $('btn').className = '';
+      if (liveLine) { map.removeLayer(liveLine); liveLine = null; }
+    }
+  };
+
+  navigator.geolocation.getCurrentPosition(function (p) {
+    onPos(p);
+    const c = toMap(p.coords.latitude, p.coords.longitude);
+    map.setView([c[0], c[1]], 16);
+  }, onErr, { enableHighAccuracy: true, timeout: 12000 });
+}
 </script>
 </body>
 </html>
