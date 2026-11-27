@@ -61,19 +61,22 @@ window.onerror = function(m, s, l) {
 };
 
 /* ================= 等 Leaflet 加载完成再启动 ================= */
-(function waitL(n) {
-  if (window.L) { try { boot(); } catch (ex) {
+function waitL(n) {
+  if (window.L) {
+    try { boot(); } catch (ex) {
       document.getElementById('err').style.display = 'block';
-      document.getElementById('err').textContent = '启动失败：' + ex.message; } return; }
+      document.getElementById('err').textContent = '启动失败：' + ex.message;
+    }
+    return;
+  }
   if (n <= 0) {
     document.getElementById('dbg').textContent = '地图库加载失败，请检查网络';
     document.getElementById('err').style.display = 'block';
-    document.getElementById('err').textContent =
-      'Leaflet 加载失败。可能 jsdelivr / unpkg 都被网络拦截，请换网络后重试。';
+    document.getElementById('err').textContent = 'Leaflet 加载失败，请换网络后重试。';
     return;
   }
   setTimeout(function () { waitL(n - 1); }, 250);
-})(40);
+}
 
 /* ================= 玩法参数 ================= */
 const CFG = {
@@ -463,6 +466,8 @@ function boot() {
     map.setView([c[0], c[1]], 16);
   }, onErr, { enableHighAccuracy: true, timeout: 12000 });
 }
+/* 等所有声明都执行完，再启动 —— 避免 TDZ 报错 */
+waitL(40);
 </script>
 </body>
 </html>
